@@ -107,6 +107,10 @@ struct spdk_nvmf_request {
 
 	struct spdk_nvmf_dif_info	dif;
 
+	uint32_t			host_iovcnt;
+	struct iovec			host_iov[NVMF_REQ_MAX_BUFFERS];
+	void				*host_buffers[NVMF_REQ_MAX_BUFFERS];
+
 	struct spdk_bdev_io_wait_entry	bdev_io_wait;
 	spdk_nvmf_nvme_passthru_cmd_cb	cmd_cb_fn;
 	struct spdk_nvmf_request	*first_fused_req;
@@ -442,6 +446,13 @@ int spdk_nvmf_request_get_buffers(struct spdk_nvmf_request *req,
 				  struct spdk_nvmf_transport_poll_group *group,
 				  struct spdk_nvmf_transport *transport,
 				  uint32_t length);
+void spdk_nvmf_request_free_host_buffers(struct spdk_nvmf_request *req,
+		struct spdk_nvmf_transport_poll_group *group,
+		struct spdk_nvmf_transport *transport);
+int spdk_nvmf_request_get_host_buffers(struct spdk_nvmf_request *req,
+				       struct spdk_nvmf_transport_poll_group *group,
+				       struct spdk_nvmf_transport *transport,
+				       uint32_t length);
 
 bool spdk_nvmf_request_get_dif_ctx(struct spdk_nvmf_request *req, struct spdk_dif_ctx *dif_ctx);
 
