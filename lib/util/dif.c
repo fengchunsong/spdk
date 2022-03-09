@@ -881,19 +881,25 @@ dif_generate_copy_split(struct _dif_sgl *src_sgl, struct _dif_sgl *dst_sgl,
 
 int
 spdk_dif_generate_copy(struct iovec *iovs, int iovcnt, struct iovec *bounce_iov,
-		       uint32_t num_blocks, const struct spdk_dif_ctx *ctx)
+		       int bounce_iovcnt, uint32_t num_blocks,
+		       const struct spdk_dif_ctx *ctx)
 {
 	struct _dif_sgl src_sgl, dst_sgl;
 	uint32_t data_block_size;
 
 	_dif_sgl_init(&src_sgl, iovs, iovcnt);
-	_dif_sgl_init(&dst_sgl, bounce_iov, 1);
+	_dif_sgl_init(&dst_sgl, bounce_iov, bounce_iovcnt);
 
 	data_block_size = ctx->block_size - ctx->md_size;
 
 	if (!_dif_sgl_is_valid(&src_sgl, data_block_size * num_blocks) ||
 	    !_dif_sgl_is_valid(&dst_sgl, ctx->block_size * num_blocks)) {
 		SPDK_ERRLOG("Size of iovec arrays are not valid.\n");
+		return -EINVAL;
+	}
+
+	if (!_dif_sgl_is_bytes_multiple(&dst_sgl, ctx->block_size)) {
+		SPDK_ERRLOG("All bounce_iov elements must be aligned with block_size.\n");
 		return -EINVAL;
 	}
 
@@ -1014,13 +1020,14 @@ dif_verify_copy_split(struct _dif_sgl *src_sgl, struct _dif_sgl *dst_sgl,
 
 int
 spdk_dif_verify_copy(struct iovec *iovs, int iovcnt, struct iovec *bounce_iov,
-		     uint32_t num_blocks, const struct spdk_dif_ctx *ctx,
+		     int bounce_iovcnt, uint32_t num_blocks,
+		     const struct spdk_dif_ctx *ctx,
 		     struct spdk_dif_error *err_blk)
 {
 	struct _dif_sgl src_sgl, dst_sgl;
 	uint32_t data_block_size;
 
-	_dif_sgl_init(&src_sgl, bounce_iov, 1);
+	_dif_sgl_init(&src_sgl, bounce_iov, bounce_iovcnt);
 	_dif_sgl_init(&dst_sgl, iovs, iovcnt);
 
 	data_block_size = ctx->block_size - ctx->md_size;
@@ -1028,6 +1035,11 @@ spdk_dif_verify_copy(struct iovec *iovs, int iovcnt, struct iovec *bounce_iov,
 	if (!_dif_sgl_is_valid(&dst_sgl, data_block_size * num_blocks) ||
 	    !_dif_sgl_is_valid(&src_sgl, ctx->block_size * num_blocks)) {
 		SPDK_ERRLOG("Size of iovec arrays are not valid\n");
+		return -EINVAL;
+	}
+
+	if (!_dif_sgl_is_bytes_multiple(&src_sgl, ctx->block_size)) {
+		SPDK_ERRLOG("All bounce_iov elements must be aligned with block_size.\n");
 		return -EINVAL;
 	}
 
