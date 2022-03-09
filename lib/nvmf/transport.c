@@ -767,3 +767,94 @@ spdk_nvmf_request_get_buffers(struct spdk_nvmf_request *req,
 
 	return rc;
 }
+
+static inline int
+nvmf_request_set_bounce_buffer(struct spdk_nvmf_request *req, void *buf, uint32_t length,
+			       uint32_t io_unit_size)
+{
+	req->bounce_buffers[req->bounce_iovcnt] = buf;
+	req->bounce_iov[req->bounce_iovcnt].iov_base = (void *)((uintptr_t)(buf + NVMF_DATA_BUFFER_MASK) &
+			~NVMF_DATA_BUFFER_MASK);
+	req->bounce_iov[req->bounce_iovcnt].iov_len  = spdk_min(length, io_unit_size);
+	length -= req->bounce_iov[req->bounce_iovcnt].iov_len;
+	req->bounce_iovcnt++;
+
+	return length;
+}
+
+void
+spdk_nvmf_request_free_bounce_buffers(struct spdk_nvmf_request *req,
+				      struct spdk_nvmf_transport_poll_group *group,
+				      struct spdk_nvmf_transport *transport)
+{
+	uint32_t i;
+
+	for (i = 0; i < req->bounce_iovcnt; i++) {
+		if (group->buf_cache_count < group->buf_cache_size) {
+			STAILQ_INSERT_HEAD(&group->buf_cache,
+					   (struct spdk_nvmf_transport_pg_cache_buf *)req->bounce_buffers[i],
+					   link);
+			group->buf_cache_count++;
+		} else {
+			spdk_mempool_put(transport->data_buf_pool, req->bounce_buffers[i]);
+		}
+		req->bounce_iov[i].iov_base = NULL;
+		req->bounce_buffers[i] = NULL;
+		req->bounce_iov[i].iov_len = 0;
+	}
+	req->bounce_iovcnt = 0;
+}
+
+int
+spdk_nvmf_request_get_bounce_buffers(struct spdk_nvmf_request *req,
+				     struct spdk_nvmf_transport_poll_group *group,
+				     struct spdk_nvmf_transport *transport,
+				     uint32_t total_length)
+{
+	uint32_t block_size = req->dif.dif_ctx.block_size;
+	uint32_t data_block_size = block_size - req->dif.dif_ctx.md_size;
+	uint32_t length = total_length / block_size * data_block_size;
+	uint32_t io_unit_size = req->iov[0].iov_len / block_size * data_block_size;
+	uint32_t num_buffers;
+	uint32_t i = 0, j;
+	void *buffer, *buffers[NVMF_REQ_MAX_BUFFERS];
+
+	req->bounce_iovcnt = 0;
+	/* Data blocks must be block aligned */
+	if (!io_unit_size || req->iov[0].iov_len % block_size) {
+		return -EINVAL;
+	}
+	/* If the number of buffers is too large, then we know the I/O is larger than allowed.
+	 *  Fail it.
+	 */
+	num_buffers = SPDK_CEIL_DIV(length, io_unit_size);
+	if (num_buffers > NVMF_REQ_MAX_BUFFERS) {
+		return -EINVAL;
+	}
+
+	while (i < num_buffers) {
+		if (!(STAILQ_EMPTY(&group->buf_cache))) {
+			group->buf_cache_count--;
+			buffer = STAILQ_FIRST(&group->buf_cache);
+			STAILQ_REMOVE_HEAD(&group->buf_cache, link);
+			assert(buffer != NULL);
+
+			length = nvmf_request_set_bounce_buffer(req, buffer, length, io_unit_size);
+			i++;
+		} else {
+			if (spdk_mempool_get_bulk(transport->data_buf_pool, buffers,
+						  num_buffers - i)) {
+				spdk_nvmf_request_free_bounce_buffers(req, group, transport);
+				return -ENOMEM;
+			}
+			for (j = 0; j < num_buffers - i; j++) {
+				length = nvmf_request_set_bounce_buffer(req, buffers[j], length, io_unit_size);
+			}
+			i += num_buffers - i;
+		}
+	}
+
+	assert(length == 0);
+
+	return 0;
+}
